@@ -213,7 +213,7 @@ resultung buffer-content"
 (defun caballero/chomp-line ()
   "Remove leading and trailing whitespaces from current line"
   (beginning-of-line)
-  (when (looking-at "^[ \t]*\\([ \t]\\|\\(?:[ \t].*[ \t]\\)\\)[ \t]*$")
+  (when (looking-at "^[ \t]*\\([^ \t]\\|\\(?:[^ \t].*[^ \t]\\)\\)[ \t]*$")
     (replace-match (match-string 1) nil t)
     t))
 
@@ -254,18 +254,23 @@ resultung buffer-content"
 
 
 (defmacro caballero/save-indentation (&rest funs)
-  "Strip indentation from each line, execute FORMS and reinstate indentation"
-  (let ((indent (make-symbol "indent"))
-        (old-l1-indent (make-symbol "new-l1-indent")
+  "Strip indentation from each line, execute FORMS and reinstate indentation
+   so that the indentation of the FIRST LINE matches"
+  (let ((old-l1-indent (make-symbol "new-l1-indent"))
         (new-l1-indent (make-symbol "old-l1-indent"))
         (res nil))
-    `(let ((,indent (caballero/kill-indentation)))
+    `(let ( (,old-l1-indent (save-excursion
+                              (beginning-of-buffer)
+                              (current-indentation))))
        (unwind-protect
-           (progn ,@funs)
+           (progn
+             (caballero/kill-indentation)
+             ,@funs)
          (progn
            (beginning-of-buffer)
-           (let ((,new-indent (current-indentation)))
-             (caballero/add-indentation (- ,indent ,new-indent))))))))
+           (let ((,new-l1-indent (current-indentation)))
+             (caballero/add-indentation (- ,old-l1-indent
+                                           ,new-l1-indent))))))))
 
 (defun caballero/strip-list ()
   "strip commas from comma-seperated list"
@@ -273,10 +278,11 @@ resultung buffer-content"
 ;; split list items on single line
   (replace-regexp "\\([^ \t,\n]\\)[ \t]*,[ \t]*\\([^ \t,\n]\\)" "\\1\n\\2")
   (beginning-of-buffer)
-  (replace-regexp "^\\([ \t]*\\),\\([ \t]*\\)" "\\1 \\2")
+  (replace-regexp "^\\([ \t]*\\),\\([ \t]*\\)" "")
   (beginning-of-buffer)
   (replace-regexp ",[ \t]*$" "")
   (beginning-of-buffer)
+  (caballero/each-line (caballero/chomp-line))
   )
 
 (defun caballero/listify ()
