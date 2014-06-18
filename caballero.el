@@ -311,7 +311,7 @@ resultung buffer-content"
   "format buffer so that each line contains a list element "
   `(progn
     (save-excursion (caballero/strip-list))
-    (unwind-protect ,@funs
+    (unwind-protect (progn ,@funs)
       (caballero/listify))))
 
 
