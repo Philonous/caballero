@@ -136,7 +136,8 @@
   "Get the name and data of the associated section"
   (save-excursion
     (caballero/beginning-of-section)
-    (when (looking-at "^\\(\\w+\\):?[ \t]*\\(.*\\)$")
+    (when (and (caballero/section-header-p)
+               (looking-at "^\\(\\w+\\)[ \t]*\\(.*\\)$"))
       (list :name (match-string-no-properties 1)
             :value (match-string-no-properties 2)
             :beginning (match-beginning 0)
@@ -320,14 +321,16 @@ resultung buffer-content"
     (goto-char (match-end 0)))
   nil)
 
-(defun caballero/subsection-sort-lines ()
+(defun caballero/subsection-arrange-lines ()
   "Sort lines of current subsection"
   (interactive)
   (caballero/save-position
-   (caballero/with-subsection (caballero/subsection) t
-                              (caballero/with-cs-list
-                               (sort-subr nil 'forward-line 'end-of-line
-                                          'caballero/sort-lines-key-fun)))))
+   (caballero/with-subsection
+    (caballero/subsection) t
+    (caballero/with-cs-list
+     (sort-subr nil 'forward-line 'end-of-line
+                'caballero/sort-lines-key-fun)
+     ))))
 
 
 
@@ -364,21 +367,29 @@ resultung buffer-content"
   (caballero/forward-to-line-entry)
   )
 
-(defun caballero/find-subsection (section name)
+
+(defun caballero/find-subsection-by (section pred)
   "Find sunsection with name NAME"
   (save-excursion
-    (goto-char (caballero/section-start section))
-    (let* ((end (caballero/section-end))
+    (when section (goto-char (caballero/section-start section)))
+    (let* ((end (if section (caballero/section-end) (point-max)))
            (found nil))
-      (while (and  (< (point) end)
-                   (not found))
+      (while (and (< (point) end)
+                  (not found))
         (let ((subsection (caballero/subsection)))
-          (when (and subsection
-                     (string= (downcase (caballero/section-name subsection))
-                              (downcase name)))
+          (when (and subsection (funcall pred subsection))
             (setq found subsection)))
         (caballero/next-subsection))
       found)))
+
+(defun caballero/find-subsection (section name)
+  "Find sunsection with name NAME"
+  (let ((downcase-name (downcase name)))
+    (caballero/find-subsection-by
+     section
+     '(lambda (subsection)
+        (string= (downcase (caballero/section-name subsection))
+                 downcase-name)))))
 
 (defun caballero/goto-subsection (name)
   (let ((subsection (caballero/find-subsection (caballero/section) name)))
@@ -471,7 +482,12 @@ resultung buffer-content"
   "List of sections that contain filename"
   )
 
+(defconst caballero/source-bearing-sections
+  '("library" "executable" "test-suite" "benchmark"))
 
+(defun caballero/source-section-p (section)
+  (not (not  (member (downcase (caballero/section-name section))
+                      caballero/source-bearing-sections))))
 
 (defun caballero/line-filename ()
   "Expand filename in current line according to the subsection type
@@ -558,7 +574,7 @@ Source names from main-is and c-sources sections are left untouched
 
 
 (define-key haskell-cabal-mode-map  (kbd "C-c s")
-  'caballero/subsection-sort-lines)
+  'caballero/subsection-arrange-lines)
 (define-key haskell-cabal-mode-map  (kbd "C-M-n") 'caballero/next-section)
 (define-key haskell-cabal-mode-map  (kbd "C-M-p") 'caballero/previous-section)
 (define-key haskell-cabal-mode-map  (kbd "M-n") 'caballero/next-subsection)
@@ -617,7 +633,69 @@ Source names from main-is and c-sources sections are left untouched
      (set (make-variable-buffer-local 'indent-line-function)
           'caballero/indent-line)))
 
+(defun caballero/map-sections (fun)
+  "Execute fun over each section, collecting the result"
+  (save-excursion
+    (beginning-of-buffer)
+    (let ((results nil))
+        (while (not (eobp))
+          (let* ((section (caballero/section))
+                 (result (and section (funcall fun (caballero/section)))))
+            (when section (setq results (cons result results))))
+          (caballero/next-section))
+        (nreverse  results))))
 
+(defun caballero/section-add-build-dependency (dependency &optional sort sec)
+  "Add a build dependency to the build-depends section"
+  (let* ((section (or sec (caballero/section)))
+         (subsection (and section
+                          (caballero/find-subsection section "build-depends"))))
+    (when subsection
+      (caballero/with-subsection
+       subsection t
+       (caballero/with-cs-list
+        (insert dependency)
+        (insert "\n")
+        (when sort
+          (beginning-of-buffer)
+          (sort-subr nil 'forward-line 'end-of-line
+                     'caballero/sort-lines-key-fun)))))))
+
+(defun caballero/add-build-dependency (dependency &optional sort silent)
+  "Add a build dependencies to sections"
+  (caballero/map-sections
+   (lambda (section)
+     (when (caballero/source-section-p section)
+       (when (or silent
+                 (y-or-n-p (format  "Add dependency %s to %s section %s?"
+                                    dependency
+                                    (caballero/section-name section)
+                                    (caballero/section-value section))))
+         (caballero/section-add-build-dependency dependency sort section)
+         nil)))))
+
+(defun caballero/add-dependency (package &optional version no-prompt
+                                                   sort silent)
+  "Add PACKAGE (and optionally suffix -VERSION) to the cabal
+file. Prompts the user before doing so.
+
+If VERSION is non-nil it will be appended as a minimum version.
+If NO-PROMPT is nil the minimum-version is read from the minibuffer
+When SORT is non-nil the package entries are sorted afterwards
+If SILENT ist nil the user is prompted for each source-section
+"
+  (ingteractive
+   (list (read-from-minibuffer "Package entry: ")
+         nil t t nil))
+  (save-window-excursion
+    (find-file-other-window (haskell-cabal-find-file))
+    (let ((entry (if no-prompt package
+                   (read-from-minibuffer
+                    "Package entry: "
+                    (concat package (if version (concat " >= " version) ""))))))
+      (caballero/add-build-dependency entry sort silent)
+      (when (or silent (y-or-n-p "Save cabal file?"))
+        (save-buffer)))))
 
 
 (provide 'caballero)
